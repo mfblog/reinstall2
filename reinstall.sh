@@ -2,6 +2,10 @@
 # 部分系统未提供 /bin/bash，因此统一走 env bash
 # shellcheck disable=SC2086
 
+# 本仓库是上游 bin456789/reinstall 的 Debian-only 精简版。
+# 目标系统只支持 Debian；其它发行版相关代码仅用于兼容当前宿主系统、
+# 安装运行时依赖，或作为引导组件来源，不表示支持重装为那些系统。
+
 set -eE
 confhome=https://raw.githubusercontent.com/imengying/reinstall/main
 
@@ -16,7 +20,9 @@ export LC_ALL=C
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 
 # 脚本依赖 bash；极简宿主上先补齐或切换到 bash
-if [ -z "$BASH" ]; then
+if [ -z "$BASH" ] ||
+    # el 的 sh 是 bash 运行在 posix 模式，依然有 $BASH 和 $BASH_VERSION
+    { [ -n "$BASH" ] && [ -n "$POSIXLY_CORRECT" ]; }; then
     if [ -f /etc/alpine-release ]; then
         if ! apk add bash; then
             echo "Error while install bash." >&2
@@ -186,8 +192,7 @@ umount_all() {
 }
 
 is_use_firmware() {
-    # shellcheck disable=SC2154
-    [ "$nextos_distro" = debian ] && ! is_virt
+    ! is_virt
 }
 
 is_digit() {
@@ -238,18 +243,20 @@ insert_into_file() {
 }
 
 add_community_repo_for_alpine() {
-    local alpine_ver
+    local ver mirror
 
-    # 先检查原来的repo是不是egde
+    # 先检查原来的 repo 是不是 edge 或者 latest-stable
     if grep -q '^http.*/edge/main$' /etc/apk/repositories; then
-        alpine_ver=edge
+        ver=edge
+    elif grep -q '^http.*/latest-stable/main$' /etc/apk/repositories; then
+        ver=latest-stable
     else
-        alpine_ver=v$(cut -d. -f1,2 </etc/alpine-release)
+        ver=v$(cut -d. -f1,2 </etc/alpine-release)
     fi
 
-    if ! grep -q "^http.*/$alpine_ver/community$" /etc/apk/repositories; then
+    if ! grep -q "^http.*/$ver/community$" /etc/apk/repositories; then
         mirror=$(grep '^http.*/main$' /etc/apk/repositories | sed 's,/[^/]*/main$,,' | head -1)
-        echo $mirror/$alpine_ver/community >>/etc/apk/repositories
+        echo "$mirror/$ver/community" >>/etc/apk/repositories
     fi
 }
 
@@ -302,6 +309,8 @@ setos() {
     local releasever=$3
     info set $step $distro $releasever
 
+    # Debian-only: 精简版只保留 Debian 目标系统配置。
+    # 后续如出现其它发行版名称，通常是宿主兼容或上游遗留注释。
     setos_debian() {
         is_debian_elts() {
             [ "$releasever" -le 10 ]
@@ -394,11 +403,12 @@ Continue?
     eval ${step}_releasever=$releasever
 
     case "$distro" in
-    *) setos_$distro ;;
+    debian) setos_debian ;;
+    *) error_and_exit "Unsupported distro: $distro" ;;
     esac
 
-    # debian <=256M 必须使用云内核，否则不够内存
-    if [ "$distro" = debian ] && [ "$ram_size" -le 256 ]; then
+    # Debian <=256M 必须使用云内核，否则不够内存
+    if [ "$ram_size" -le 256 ]; then
         exit_if_cant_use_cloud_kernel
     fi
 
@@ -439,6 +449,8 @@ is_have_cmd() {
 }
 
 install_pkg() {
+    # 宿主系统可能是 Debian/Alpine/RHEL-like 等，因此保留多包管理器支持。
+    # 这里的发行版判断只服务于安装脚本运行依赖，不代表本项目支持安装这些发行版。
     find_pkg_mgr() {
         [ -n "$pkg_mgr" ] && return
 
@@ -1024,13 +1036,20 @@ add_efi_entry_in_linux() {
             # /dev/sda2
             dev_part=$(findmnt -T "$dist_dir" -no SOURCE | grep '^/dev/')
 
-            id=$(efibootmgr --create-only \
+            set -- efibootmgr --create-only \
                 --disk "/dev/$(get_disk_by_part $dev_part)" \
                 --part "$(get_part_num_by_part $dev_part)" \
                 --label "$(get_entry_name)" \
-                --loader "\\EFI\\reinstall\\$basename" |
-                grep_efi_entry | tail -1 | grep_efi_index)
-            efibootmgr --bootnext $id
+                --loader "\\EFI\\reinstall\\$basename"
+
+            if ! res=$("$@"); then
+                echo "Command: $*"
+                echo "$res"
+                error_and_exit "Could not add efi entry."
+            fi
+
+            id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index | grep .)
+            efibootmgr --bootnext "$id"
             return
         fi
     done
@@ -1050,6 +1069,8 @@ install_grub_linux_efi() {
 
     grub_efi=$(get_grub_efi_filename)
 
+    # 这里从 Fedora 仓库下载的是通用 GRUB EFI 二进制，仅用于引导 Debian installer。
+    # 本项目没有 Fedora 安装目标支持。
     # 不要用 download.fedoraproject.org，ipv6 环境可能跳转失败
     if is_in_china; then
         mirror=https://mirror.nju.edu.cn/fedora
@@ -1137,7 +1158,7 @@ build_nextos_cmdline() {
     nextos_cmdline+=" mirror/http/directory=/${nextos_udeb_mirror##*/}"
     nextos_cmdline+=" base-installer/kernel/image=$nextos_kernel"
     # elts 的 debian 不能用 security 源，否则安装过程会提示无法访问
-    if [ "$nextos_distro" = debian ] && is_debian_elts; then
+    if is_debian_elts; then
         nextos_cmdline+=" apt-setup/services-select="
     fi
 
@@ -1165,9 +1186,6 @@ mkdir_clear() {
         return
     fi
 
-    # 再次运行时，有可能 mount 了 btrfs root，因此先要 umount_all
-    # 但目前不需要 mount ，因此用不到
-    # umount_all $dir
     rm -rf $dir
     mkdir -p $dir
 }
@@ -1282,26 +1300,61 @@ EOF
     #                   云内核没有 sata 模块，也没有内嵌，有一个 CONFIG_SATA_HOST=y，libata-$(CONFIG_SATA_HOST)	+= libata-sata.o
     # scsi-modules      默认安装（改成可选），包含 nvme.ko(+) 和各种虚拟化驱动(+)
 
-    download_and_extract_udeb() {
-        package=$1
-        extract_dir=$2
+    download_and_extract_deb() {
+        local type=$1
+        local package=$2
+        local extract_dir=$3
+        local mirror url deb_list deb_path
 
-        # 获取 udeb 列表
-        udeb_list=$tmp/udeb_list
-        if ! [ -f $udeb_list ]; then
-            # shellcheck disable=SC2154
-            curl -L http://$nextos_udeb_mirror/dists/$nextos_codename/main/debian-installer/binary-$basearch_alt/Packages.gz |
-                zcat | grep 'Filename:' | awk '{print $2}' >$udeb_list
+        case "$type" in
+        deb)
+            mirror=$nextos_deb_mirror
+            url=http://$mirror/dists/$nextos_codename/main/binary-$basearch_alt/Packages.gz
+            ;;
+        udeb)
+            mirror=$nextos_udeb_mirror
+            url=http://$mirror/dists/$nextos_codename/main/debian-installer/binary-$basearch_alt/Packages.gz
+            ;;
+        esac
+
+        # 获取 deb/udeb 列表
+        deb_list=$tmp/${type}_list
+        if ! [ -f $deb_list ]; then
+            curl -L "$url" | zcat | grep 'Filename:' | awk '{print $2}' >$deb_list
         fi
 
-        # 下载 udeb
-        curl -Lo $tmp/tmp.udeb http://$nextos_udeb_mirror/"$(grep -F /${package}_ $udeb_list)"
+        # 下载 deb/udeb
+        deb_path=$(grep -F "/${package}_" "$deb_list")
+        curl -Lo $tmp/tmp.deb http://$mirror/"$deb_path"
 
         # 使用 ar tar xz
         # centos7 ar 不支持 --output
         install_pkg ar tar xz
-        (cd $tmp && ar x $tmp/tmp.udeb)
+        (cd $tmp && ar x $tmp/tmp.deb)
         tar xf $tmp/data.tar.xz -C $extract_dir
+    }
+
+    cp_debian_driver() {
+        # debian 13 的 linux-image.deb 有 /usr/lib 没有 /lib
+        # debian 13 的 scsi-modules.udeb 没有 /usr/lib 有 /lib
+        local src_drivers_dir=$1/lib/modules/$kver/kernel/drivers
+        if ! [ -d "$src_drivers_dir" ]; then
+            src_drivers_dir=$1/usr/lib/modules/$kver/kernel/drivers
+        fi
+        local extra_drivers=$2
+        local dst_drivers_dir=$initrd_dir/lib/modules/$kver/kernel/drivers
+
+        (
+            cd "$src_drivers_dir"
+            for driver in $extra_drivers; do
+                # 模块可能有压缩，因此要有 *
+                if ! find "$dst_drivers_dir" -name "$driver.ko*" | grep -q .; then
+                    echo "adding driver: $driver"
+                    file=$(find . -name "$driver.ko*" | grep .)
+                    cp -fv --parents "$file" "$dst_drivers_dir"
+                fi
+            done
+        )
     }
 
     # 在 debian installer 中判断能否用云内核
@@ -1318,15 +1371,24 @@ EOF
     echo 'export DEBCONF_DROP_TRANSLATIONS=1' |
         insert_into_file lib/debian-installer/menu before 'exec debconf'
 
-    if [ "$distro" = debian ] && is_debian_elts; then
+    if is_debian_elts; then
         curl -Lo usr/share/keyrings/debian-archive-keyring.gpg https://deb.freexian.com/extended-lts/archive-key.gpg
     fi
 
     # 提前下载 fdisk
     # 因为 fdisk-udeb 包含 fdisk 和 sfdisk，提前下载可减少占用
     mkdir_clear $tmp/fdisk
-    download_and_extract_udeb fdisk-udeb $tmp/fdisk
+    download_and_extract_deb udeb fdisk-udeb $tmp/fdisk
     cp -f $tmp/fdisk/usr/sbin/fdisk usr/sbin/
+
+    # 提前下载 pci-hyperv。udeb 没有这个模块，缺少时 Azure 可能找不到 NVMe 硬盘。
+    if [ -d /sys/module/pci_hyperv ] &&
+        ! ls lib/modules/$kver/kernel/drivers/pci/*/pci-hyperv.ko* >/dev/null 2>&1 &&
+        ! grep -Fq /pci-hyperv.ko lib/modules/$kver/modules.builtin; then
+        mkdir_clear $tmp/linux-image-$kver
+        download_and_extract_deb deb linux-image-$kver $tmp/linux-image-$kver
+        cp_debian_driver $tmp/linux-image-$kver pci-hyperv
+    fi
 
     # >256M
     if [ $ram_size -gt 256 ]; then
@@ -1340,8 +1402,14 @@ EOF
         for driver in $(get_disk_drivers $xda); do
             echo "using driver: $driver"
             case $driver in
-            nvme) extra_drivers+=" nvme nvme-core" ;;
-                # xen 的横杠特别不同
+            nvme)
+                extra_drivers+=" nvme nvme-core"
+                # debian 13+ 有 nvme-auth 模块，添加后才能识别部分 NVMe 硬盘。
+                if grep -q nvme-auth lib/modules/$kver/modules.order; then
+                    extra_drivers+=" nvme-auth"
+                fi
+                ;;
+            # xen 的横杠特别不同
             xen_blkfront) extra_drivers+=" xen-blkfront" ;;
             xen_scsifront) extra_drivers+=" xen-scsifront" ;;
             virtio_blk | virtio_scsi | hv_storvsc | vmw_pvscsi) extra_drivers+=" $driver" ;;
@@ -1358,22 +1426,8 @@ EOF
         # 但反查也找不到 curl https://deb.debian.org/debian/dists/bookworm/main/Contents-udeb-amd64.gz | zcat | grep xen
         if [ -n "$extra_drivers" ]; then
             mkdir_clear $tmp/scsi
-            download_and_extract_udeb scsi-modules-$kver-di $tmp/scsi
-            relative_drivers_dir=lib/modules/$kver/kernel/drivers
-
-            udeb_drivers_dir=$tmp/scsi/$relative_drivers_dir
-            dist_drivers_dir=$initrd_dir/$relative_drivers_dir
-            (
-                cd $udeb_drivers_dir
-                for driver in $extra_drivers; do
-                    # 模块可能有压缩，因此要有 *
-                    if ! find $dist_drivers_dir -name "$driver.ko*" | grep -q .; then
-                        echo "adding driver: $driver"
-                        file=$(find . -name "$driver.ko*" | grep .)
-                        cp -fv --parents "$file" "$dist_drivers_dir"
-                    fi
-                done
-            )
+            download_and_extract_deb udeb scsi-modules-$kver-di $tmp/scsi
+            cp_debian_driver $tmp/scsi "$extra_drivers"
         fi
     fi
 
@@ -1408,6 +1462,7 @@ get_drivers() {
     # xen_blkfront
     # ahci
     # nvme
+    # pci_hyperv
     # mptspi
     # mptsas
     # vmw_pvscsi
@@ -1534,9 +1589,7 @@ This script is outdated, please download reinstall.sh again.
     fi
     printf '%s\n' "$nextos_releasever" >$initrd_dir/configs/releasever
 
-    if [ "$nextos_distro" = debian ]; then
-        mod_initrd_debian
-    fi
+    mod_initrd_debian
 
     # 虚拟化环境下精简 initrd，尽量减少内存占用
     if is_virt; then
@@ -1827,9 +1880,7 @@ if is_use_firmware; then
 fi
 
 # 修改 debian initrd
-if [ "$nextos_distro" = debian ]; then
-    mod_initrd
-fi
+mod_initrd
 
 # 配置下一次启动项（grub/extlinux）
 

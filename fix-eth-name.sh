@@ -4,45 +4,48 @@
 
 set -eE
 
-# 首次启动时等待 udev 完成网卡重命名
-sleep 10
-if command -v udevadm >/dev/null; then
-    udevadm settle
-elif command -v mdev >/dev/null; then
-    mdev -sf
-fi
-
 # 本脚本在首次进入新系统后运行
 # 将 trans 阶段生成的网络配置中的网卡名(eth0) 改为正确的网卡名
 # 也适用于安装时和安装后内核网卡命名不一致的情况
 # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=928923
 
+# 首次启动时网卡名可能会被 udev/systemd 反复修改几次，需等待名称稳定。
+has_eth=false
+check_count=0
+stable_count=0
+old_state=
+while true; do
+    check_count=$((check_count + 1))
+
+    new_state=$(ip -o link | awk '$2 != "lo:"')
+    if [ -n "$new_state" ]; then
+        has_eth=true
+    fi
+
+    if $has_eth && [ "$old_state" = "$new_state" ]; then
+        stable_count=$((stable_count + 1))
+    else
+        stable_count=0
+    fi
+
+    old_state=$new_state
+
+    if $has_eth && [ "$stable_count" -ge 10 ]; then
+        break
+    fi
+
+    if ! $has_eth && [ "$check_count" -ge 60 ]; then
+        exit 1
+    fi
+
+    sleep 1
+done
+
 to_lower() {
     tr '[:upper:]' '[:lower:]'
 }
 
-retry() {
-    local max_try=$1
-    shift
-
-    for i in $(seq "$max_try"); do
-        if "$@"; then
-            return
-        else
-            ret=$?
-            if [ "$i" -ge "$max_try" ]; then
-                return $ret
-            fi
-            sleep 1
-        fi
-    done
-}
-
 get_ethx_by_mac() {
-    retry 10 _get_ethx_by_mac "$@"
-}
-
-_get_ethx_by_mac() {
     mac=$(echo "$1" | to_lower)
 
     ip -o link | grep -i "$mac" | grep -v master | awk '{print $2}' | cut -d: -f1 | grep .
