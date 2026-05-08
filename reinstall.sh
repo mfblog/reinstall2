@@ -46,7 +46,6 @@ cleanup_tmp() {
     exit_code=${1:-0}
 
     if [ -n "$tmp" ] && [ -d "$tmp" ]; then
-        info false "Cleaning up temporary files in $tmp..."
         # 先尝试卸载可能挂载的目录
         if mount | grep -q "$tmp"; then
             umount_all "$tmp" 2>/dev/null || true
@@ -1203,15 +1202,20 @@ mod_initrd_debian() {
 
     # 强制 Debian installer 使用 screen。bterm/串口选择在部分 VNC 环境下只显示内核日志，
     # 后续安装界面会跑到串口，导致 VNC 看不到进度。
-    if [ -f lib/debian-installer.d/S70menu ]; then
-        if ! echo 'if false && : \' |
-            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$bterm" \]'; then
-            warn false 'Could not patch debian-installer bterm menu branch.'
+    menu_script=
+    for path in \
+        usr/lib/debian-installer.d/S70menu \
+        lib/debian-installer.d/S70menu; do
+        if [ -f "$path" ]; then
+            menu_script=$path
+            break
         fi
-        if ! echo 'if true  || : \' |
-            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$screen_bin" -a'; then
-            warn false 'Could not patch debian-installer screen menu branch.'
-        fi
+    done
+    if [ -n "$menu_script" ]; then
+        echo 'if false && : \' |
+            insert_into_file "$menu_script" before 'if \[ -x "$bterm" \]' || true
+        echo 'if true  || : \' |
+            insert_into_file "$menu_script" before 'if \[ -x "$screen_bin" -a' || true
     fi
 
     # 改写 netcfg.postinst，在安装期采集并固化网络配置
@@ -2117,7 +2121,4 @@ else
     echo "Password: $password"
 fi
 
-echo
-info false "Installation files prepared successfully."
-info false "Temporary directory $tmp will be cleaned up."
 echo "Reboot to start the installation."
