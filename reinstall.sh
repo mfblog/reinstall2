@@ -243,6 +243,16 @@ insert_into_file() {
     sed -i "${line_num}r /dev/stdin" "$file"
 }
 
+first_existing_path() {
+    for path; do
+        if [ -e "$path" ]; then
+            echo "$path"
+            return
+        fi
+    done
+    return 1
+}
+
 add_community_repo_for_alpine() {
     local ver mirror
 
@@ -1202,15 +1212,9 @@ mod_initrd_debian() {
 
     # 强制 Debian installer 使用 screen。bterm/串口选择在部分 VNC 环境下只显示内核日志，
     # 后续安装界面会跑到串口，导致 VNC 看不到进度。
-    menu_script=
-    for path in \
+    menu_script=$(first_existing_path \
         usr/lib/debian-installer.d/S70menu \
-        lib/debian-installer.d/S70menu; do
-        if [ -f "$path" ]; then
-            menu_script=$path
-            break
-        fi
-    done
+        lib/debian-installer.d/S70menu) || true
     if [ -n "$menu_script" ]; then
         echo 'if false && : \' |
             insert_into_file "$menu_script" before 'if \[ -x "$bterm" \]' || true
@@ -1392,8 +1396,11 @@ EOF
     curl -LO "$confhome/ttys.sh"
 
     # 可以节省一点内存？
+    menu_bin=$(first_existing_path \
+        usr/lib/debian-installer/menu \
+        lib/debian-installer/menu)
     echo 'export DEBCONF_DROP_TRANSLATIONS=1' |
-        insert_into_file lib/debian-installer/menu before 'exec debconf'
+        insert_into_file "$menu_bin" before 'exec debconf'
 
     if is_debian_elts; then
         curl -Lo usr/share/keyrings/debian-archive-keyring.gpg https://deb.freexian.com/extended-lts/archive-key.gpg
@@ -1463,7 +1470,10 @@ EOF
     # 将 use_level 2 9 修改为 use_level 1
     # x86 use_level 2 会出现 No root file system is defined.
     # arm 即使 use_level 1 也会出现 No root file system is defined.
-    sed -i 's/use_level=[29]/use_level=1/' lib/debian-installer-startup.d/S15lowmem
+    lowmem_script=$(first_existing_path \
+        usr/lib/debian-installer-startup.d/S15lowmem \
+        lib/debian-installer-startup.d/S15lowmem)
+    sed -i 's/use_level=[29]/use_level=1/' "$lowmem_script"
 
     # trans.sh 已直接维护为 Debian 安装期 helper，无需再二次改写
 }
