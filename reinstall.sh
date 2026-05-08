@@ -1138,7 +1138,10 @@ build_extra_cmdline() {
 
 echo_tmp_ttys() {
     case "$basearch" in
-    x86_64) echo "console=ttyS0,115200n8 console=tty0" ;;
+    # x86 Debian installer 同时设置 ttyS0/tty0 时，安装界面仍可能被放到串口。
+    # 不主动追加 console 参数，让 installer 优先使用 VNC/framebuffer。
+    x86_64) : ;;
+    # 部分 arm64 云主机不显式设置 tty 会卡在早期启动，保留串口和 VNC 输出。
     aarch64) echo "console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0" ;;
     esac
 }
@@ -1162,8 +1165,10 @@ build_nextos_cmdline() {
         nextos_cmdline+=" apt-setup/services-select="
     fi
 
-    # 显式带上控制台参数，方便云厂商串口/网页控制台查看安装进度
-    nextos_cmdline+=" $(echo_tmp_ttys)"
+    # arm64 需要显式带控制台参数；x86 不追加，避免 Debian installer 界面被固定到串口。
+    if ttys=$(echo_tmp_ttys); then
+        [ -n "$ttys" ] && nextos_cmdline+=" $ttys"
+    fi
     # nextos_cmdline+=" mem=256M"
     # nextos_cmdline+=" lowmem=+1"
 }
@@ -1193,6 +1198,15 @@ mkdir_clear() {
 mod_initrd_debian() {
     # 允许配置 IPv4 onlink 网关
     sed -Ei 's,&&( onlink=),||\1,' etc/udhcpc/default.script
+
+    # 强制 Debian installer 使用 screen。bterm/串口选择在部分 VNC 环境下只显示内核日志，
+    # 后续安装界面会跑到串口，导致 VNC 看不到进度。
+    if [ -f lib/debian-installer.d/S70menu ]; then
+        echo 'if false && : \' |
+            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$bterm" \]'
+        echo 'if true  || : \' |
+            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$screen_bin" -a'
+    fi
 
     # 改写 netcfg.postinst，在安装期采集并固化网络配置
     netcfg() {
