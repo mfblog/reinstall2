@@ -226,7 +226,8 @@ insert_into_file() {
     location=$2
     regex_to_find=$3
 
-    line_num=$(grep -E -n "$regex_to_find" "$file" | cut -d: -f1)
+    line_num=$(grep -E -n "$regex_to_find" "$file" | cut -d: -f1) || return 1
+    [ -n "$line_num" ] || return 1
 
     found_count=$(echo "$line_num" | wc -l)
     if [ ! "$found_count" -eq 1 ]; then
@@ -238,6 +239,7 @@ insert_into_file() {
     after) ;;
     *) return 1 ;;
     esac
+    [ "$line_num" -gt 0 ] || return 1
 
     sed -i "${line_num}r /dev/stdin" "$file"
 }
@@ -1202,10 +1204,14 @@ mod_initrd_debian() {
     # 强制 Debian installer 使用 screen。bterm/串口选择在部分 VNC 环境下只显示内核日志，
     # 后续安装界面会跑到串口，导致 VNC 看不到进度。
     if [ -f lib/debian-installer.d/S70menu ]; then
-        echo 'if false && : \' |
-            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$bterm" \]'
-        echo 'if true  || : \' |
-            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$screen_bin" -a'
+        if ! echo 'if false && : \' |
+            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$bterm" \]'; then
+            warn false 'Could not patch debian-installer bterm menu branch.'
+        fi
+        if ! echo 'if true  || : \' |
+            insert_into_file lib/debian-installer.d/S70menu before 'if \[ -x "$screen_bin" -a'; then
+            warn false 'Could not patch debian-installer screen menu branch.'
+        fi
     fi
 
     # 改写 netcfg.postinst，在安装期采集并固化网络配置
