@@ -179,6 +179,24 @@ is_os_in_btrfs() {
     mount | grep -q ' on / type btrfs '
 }
 
+get_root_reinstall_file_dir() {
+    local dir
+
+    # 获取当前系统根目录在 btrfs 中的绝对路径
+    if is_os_in_btrfs; then
+        # btrfs subvolume show /
+        # 输出可能是 / 或 root 或 @/.snapshots/1/snapshot
+        dir=$(btrfs subvolume show / | head -1)
+        if ! [ "$dir" = / ]; then
+            dir="/$dir/"
+        fi
+    else
+        dir=/
+    fi
+
+    echo "$dir"
+}
+
 umount_all() {
     if mount_lists=$(mount | grep -w "on $1" | awk '{print $3}' | grep .); then
         # alpine 没有 -R
@@ -224,8 +242,16 @@ insert_into_file() {
     file=$1
     location=$2
     regex_to_find=$3
+    shift 3
 
-    line_num=$(grep -E -n "$regex_to_find" "$file" | cut -d: -f1) || return 1
+    [ -f "$file" ] || return 1
+
+    # 默认按扩展正则匹配；必要时可传入 -F 做固定字符串匹配。
+    if [ $# -eq 0 ]; then
+        set -- -E
+    fi
+
+    line_num=$(grep "$@" -n "$regex_to_find" "$file" | cut -d: -f1) || return 1
     [ -n "$line_num" ] || return 1
 
     found_count=$(echo "$line_num" | wc -l)
@@ -1095,6 +1121,31 @@ install_grub_linux_efi() {
     add_efi_entry_in_linux $tmp/$grub_efi
 }
 
+copy_installer_files_to_efi() {
+    local dist_dir=$1 failed=0
+
+    [ -d "$dist_dir" ] || return 1
+
+    cp -f /reinstall-vmlinuz "$dist_dir/reinstall-vmlinuz.tmp" || failed=1
+    cp -f /reinstall-initrd "$dist_dir/reinstall-initrd.tmp" || failed=1
+    if is_use_firmware; then
+        cp -f /reinstall-firmware "$dist_dir/reinstall-firmware.tmp" || failed=1
+    fi
+
+    if [ "$failed" -eq 0 ]; then
+        mv -f "$dist_dir/reinstall-vmlinuz.tmp" "$dist_dir/reinstall-vmlinuz" || failed=1
+        mv -f "$dist_dir/reinstall-initrd.tmp" "$dist_dir/reinstall-initrd" || failed=1
+        if is_use_firmware; then
+            mv -f "$dist_dir/reinstall-firmware.tmp" "$dist_dir/reinstall-firmware" || failed=1
+        fi
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        rm -f "$dist_dir/reinstall-vmlinuz.tmp" "$dist_dir/reinstall-initrd.tmp" "$dist_dir/reinstall-firmware.tmp"
+        return 1
+    fi
+}
+
 
 find_grub_extlinux_cfg() {
     dir=$1
@@ -1217,9 +1268,9 @@ mod_initrd_debian() {
         lib/debian-installer.d/S70menu) || true
     if [ -n "$menu_script" ]; then
         echo 'if false && : \' |
-            insert_into_file "$menu_script" before 'if \[ -x "$bterm" \]' || true
+            insert_into_file "$menu_script" before 'if [ -x "$bterm" ]' -F || true
         echo 'if true  || : \' |
-            insert_into_file "$menu_script" before 'if \[ -x "$screen_bin" -a' || true
+            insert_into_file "$menu_script" before 'if [ -x "$screen_bin" -a' -F || true
     fi
 
     # 改写 netcfg.postinst，在安装期采集并固化网络配置
@@ -1886,6 +1937,12 @@ if is_efi; then
     # shellcheck disable=SC2046
     find $(get_maybe_efi_dirs_in_linux) $([ -d /boot ] && echo /boot) \
         -type f -name 'custom.cfg' -exec rm -f {} \;
+    # 清理上次可能复制到 EFI 分区的安装文件
+    for efi_dir in $(get_maybe_efi_dirs_in_linux); do
+        rm -f "$efi_dir/EFI/reinstall/reinstall-vmlinuz" \
+            "$efi_dir/EFI/reinstall/reinstall-initrd" \
+            "$efi_dir/EFI/reinstall/reinstall-firmware" 2>/dev/null || true
+    done
 
     install_pkg efibootmgr
     efibootmgr | grep -q 'BootNext:' && efibootmgr --quiet --delete-bootnext
@@ -1991,22 +2048,14 @@ else
 fi
 
 # 找到 /reinstall-vmlinuz /reinstall-initrd 的绝对路径
-# extlinux + 单独的 boot 分区
-# 把内核文件放在 extlinux.conf 所在的目录
-if is_use_local_extlinux && is_boot_in_separate_partition; then
+# linux efi 优先把文件放在 EFI/reinstall 下，减少独立 GRUB 扫描根分区失败的风险。
+if is_efi && copy_installer_files_to_efi "$efi_reinstall_dir"; then
+    dir=/EFI/reinstall/
+elif is_use_local_extlinux && is_boot_in_separate_partition; then
+    # extlinux + 单独的 boot 分区，把内核文件放在 extlinux.conf 所在的目录
     dir=
 else
-    # 获取当前系统根目录在 btrfs 中的绝对路径
-    if is_os_in_btrfs; then
-        # btrfs subvolume show /
-        # 输出可能是 / 或 root 或 @/.snapshots/1/snapshot
-        dir=$(btrfs subvolume show / | head -1)
-        if ! [ "$dir" = / ]; then
-            dir="/$dir/"
-        fi
-    else
-        dir=/
-    fi
+    dir=$(get_root_reinstall_file_dir)
 fi
 
 vmlinuz=${dir}reinstall-vmlinuz
@@ -2107,6 +2156,9 @@ set timeout_style=menu
 set timeout=5
 menuentry "$(get_entry_name)" --unrestricted {
     insmod lvm
+    insmod part_gpt
+    insmod ext2
+    insmod fat
     $(is_os_in_btrfs && echo 'set btrfs_relative_path=n')
     insmod all_video
     search --no-floppy --file --set=root $vmlinuz
