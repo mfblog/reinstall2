@@ -32,10 +32,28 @@ get_netconf_to() {
 
     # shellcheck disable=SC2154
     case "$1" in
-    slaac) echo "$ra" | grep 'Autonomous address conf' | grep -q Yes && res=1 || res=0 ;;
-    dhcpv6) echo "$ra" | grep 'Stateful address conf' | grep -q Yes && res=1 || res=0 ;;
+    slaac)
+        if echo "$ra" | grep 'Autonomous address conf' | grep -q Yes; then
+            res=1
+        else
+            res=0
+        fi
+        ;;
+    dhcpv6)
+        if echo "$ra" | grep 'Stateful address conf' | grep -q Yes; then
+            res=1
+        else
+            res=0
+        fi
+        ;;
     rdnss) res=$(echo "$ra" | grep 'Recursive DNS server' | cut -d: -f2-) ;;
-    other) echo "$ra" | grep 'Stateful other conf' | grep -q Yes && res=1 || res=0 ;;
+    other)
+        if echo "$ra" | grep 'Stateful other conf' | grep -q Yes; then
+            res=1
+        else
+            res=0
+        fi
+        ;;
     *) res=$(cat /dev/netconf/$ethx/$1) ;;
     esac
 
@@ -178,14 +196,27 @@ is_have_rdnss() {
 
 is_need_manual_set_dnsv6() {
     # 有没有可能是静态但是有 rdnss？
-    [ -n "$ra_unavailable" ] && return $FALSE
-    ! is_have_ipv6 && return $FALSE
-    is_dhcpv6 && return $FALSE
-    is_staticv6 && return $TRUE
-    is_slaac && ! is_enable_other_flag && ! is_have_rdnss
+    if [ -n "$ra_unavailable" ]; then
+        return $FALSE
+    fi
+    if ! is_have_ipv6; then
+        return $FALSE
+    fi
+    if is_dhcpv6; then
+        return $FALSE
+    fi
+    if is_staticv6; then
+        return $TRUE
+    fi
+    if is_slaac && ! is_enable_other_flag && ! is_have_rdnss; then
+        return $TRUE
+    fi
+    return $FALSE
 }
 
 get_current_dns() {
+    [ -f /etc/resolv.conf ] || return 0
+
     mark=$(
         case "$1" in
         4) echo . ;;
@@ -194,7 +225,7 @@ get_current_dns() {
     )
     # debian 11 initrd 没有 xargs awk
     # debian 12 initrd 没有 xargs
-    grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1
+    grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1 || true
 }
 
 get_eths() {
@@ -308,7 +339,9 @@ EOF
             get_netconf_to ipv6_extra_addrs
             if [ -n "$ipv6_extra_addrs" ]; then
                 printf '%s\n' "$ipv6_extra_addrs" | tr ',' '\n' | while IFS= read -r addr; do
-                    [ -n "$addr" ] && echo "    post-up ip -6 addr add $addr dev $ethx" >>$conf_file
+                    if [ -n "$addr" ]; then
+                        echo "    post-up ip -6 addr add $addr dev $ethx" >>$conf_file
+                    fi
                 done
             fi
         fi

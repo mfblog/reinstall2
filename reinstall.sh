@@ -154,7 +154,9 @@ curl() {
 }
 
 is_in_china() {
-    [ "$force_cn" = 1 ] && return 0
+    if [ "$force_cn" = 1 ]; then
+        return 0
+    fi
 
     if [ -z "$_loc" ]; then
         # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
@@ -355,7 +357,11 @@ setos() {
 
         # 用此标记要是否 elts, 用于安装后修改 elts/etls-cn 源
         # shellcheck disable=SC2034
-        is_debian_elts && elts=1 || elts=0
+        if is_debian_elts; then
+            elts=1
+        else
+            elts=0
+        fi
 
         case "$releasever" in
         9) codename=stretch ;;
@@ -415,11 +421,19 @@ Continue?
             # cloud.debian.org 同样在瑞典，不是 cdn
         fi
 
-        is_virt && flavour=-cloud || flavour=
+        if is_virt; then
+            flavour=-cloud
+        else
+            flavour=
+        fi
         # debian 10 云内核 vultr efi vnc 没有显示
-        [ "$releasever" -le 10 ] && flavour=
+        if [ "$releasever" -le 10 ]; then
+            flavour=
+        fi
         # 甲骨文 arm64 cloud 内核 vnc 没有显示
-        [ "$basearch_alt" = arm64 ] && flavour=
+        if [ "$basearch_alt" = arm64 ]; then
+            flavour=
+        fi
 
         # 传统安装
         initrd_dir=dists/$codename/main/installer-$basearch_alt/current/images/netboot/debian-installer/$basearch_alt
@@ -489,7 +503,9 @@ install_pkg() {
     # 宿主系统可能是 Debian/Alpine/RHEL-like 等，因此保留多包管理器支持。
     # 这里的发行版判断只服务于安装脚本运行依赖，不代表本项目支持安装这些发行版。
     find_pkg_mgr() {
-        [ -n "$pkg_mgr" ] && return
+        if [ -n "$pkg_mgr" ]; then
+            return
+        fi
 
         # 查找方法1: 通过 ID / ID_LIKE
         # 因为可能装了多种包管理器
@@ -499,17 +515,28 @@ install_pkg() {
             for id in $ID $ID_LIKE; do
                 # https://github.com/chef/os_release
                 case "$id" in
-                rhel | almalinux) is_have_cmd dnf && pkg_mgr=dnf || pkg_mgr=yum ;;
+                rhel | almalinux)
+                    if is_have_cmd dnf; then
+                        pkg_mgr=dnf
+                    else
+                        pkg_mgr=yum
+                    fi
+                    ;;
                 debian) pkg_mgr=apt-get ;;
                 alpine) pkg_mgr=apk ;;
                 esac
-                [ -n "$pkg_mgr" ] && return
+                if [ -n "$pkg_mgr" ]; then
+                    return
+                fi
             done
         fi
 
         # 查找方法 2
         for mgr in dnf yum apt-get apk; do
-            is_have_cmd $mgr && pkg_mgr=$mgr && return
+            if is_have_cmd $mgr; then
+                pkg_mgr=$mgr
+                return
+            fi
         done
 
         return 1
@@ -647,12 +674,18 @@ install_pkg() {
             apk add $pkg
             ;;
         apt-get)
-            [ -z "$apt_updated" ] && apt-get update && apt_updated=1
+            if [ -z "$apt_updated" ]; then
+                apt-get update
+                apt_updated=1
+            fi
             DEBIAN_FRONTEND=noninteractive apt-get install -y $pkg
             ;;
         nix-env)
             # 不指定 channel 会很慢，而且很占内存
-            [ -z "$nix_updated" ] && nix-channel --update && nix_updated=1
+            if [ -z "$nix_updated" ]; then
+                nix-channel --update
+                nix_updated=1
+            fi
             nix-env -iA nixos.$pkg
             ;;
         esac
@@ -712,7 +745,9 @@ check_ram() {
         # 保留 -i，兼容不同大小写输出
         ram_str=$(lshw -c memory -short | grep -i 'System Memory' | awk '{print $3}')
         ram_size=$(grep <<<$ram_str -o '[0-9]*')
-        grep <<<$ram_str GiB && ram_size=$((ram_size * 1024))
+        if grep <<<$ram_str -q GiB; then
+            ram_size=$((ram_size * 1024))
+        fi
     fi
 
     # 用于兜底，不太准确
@@ -736,10 +771,17 @@ is_efi() {
 
 is_grub_dir_linked() {
     # cloudcone 重装前/重装后(方法1)
-    [ "$(readlink -f /boot/grub/grub.cfg)" = /boot/grub2/grub.cfg ] ||
-        [ "$(readlink -f /boot/grub2/grub.cfg)" = /boot/grub/grub.cfg ] ||
-        # cloudcone 重装后(方法2)
-        { [ -f /boot/grub2/grub.cfg ] && [ "$(cat /boot/grub2/grub.cfg)" = 'chainloader (hd0)+1' ]; }
+    if [ "$(readlink -f /boot/grub/grub.cfg)" = /boot/grub2/grub.cfg ]; then
+        return 0
+    fi
+    if [ "$(readlink -f /boot/grub2/grub.cfg)" = /boot/grub/grub.cfg ]; then
+        return 0
+    fi
+    # cloudcone 重装后(方法2)
+    if [ -f /boot/grub2/grub.cfg ] && [ "$(cat /boot/grub2/grub.cfg)" = 'chainloader (hd0)+1' ]; then
+        return 0
+    fi
+    return 1
 }
 
 is_secure_boot_enabled() {
@@ -760,11 +802,17 @@ is_use_local_grub_extlinux() {
 }
 
 is_use_local_grub() {
-    is_use_local_grub_extlinux && is_mbr_using_grub
+    if ! is_use_local_grub_extlinux; then
+        return 1
+    fi
+    is_mbr_using_grub
 }
 
 is_use_local_extlinux() {
-    is_use_local_grub_extlinux && ! is_mbr_using_grub
+    if ! is_use_local_grub_extlinux; then
+        return 1
+    fi
+    ! is_mbr_using_grub
 }
 
 is_mbr_using_grub() {
@@ -858,6 +906,7 @@ save_password() {
     fi
     echo "$crypted" >"$dir/password-linux-sha512"
 
+    return 0
 }
 
 # 记录主硬盘
@@ -1013,8 +1062,8 @@ get_maybe_efi_dirs_in_linux() {
             lsblk -nrpo PARTTYPE,MOUNTPOINT 2>/dev/null |
                 awk -v uuid="$efi_parttype" 'tolower($1)==uuid && $2!="" {print $2}'
         fi
-        mount | awk '$5=="vfat" || $5=="autofs" {print $3}' | grep -E '/boot|/efi'
-    } | sort -u | grep .
+        mount | awk '$5=="vfat" || $5=="autofs" {print $3}' | grep -E '/boot|/efi' || true
+    } | sort -u
 }
 
 get_disk_by_part() {
@@ -1055,7 +1104,7 @@ add_efi_entry_in_linux() {
 
     install_pkg efibootmgr
 
-    for efi_part in $(get_maybe_efi_dirs_in_linux); do
+    for efi_part in $(get_efi_dirs_or_exit); do
         if find "$efi_part" -iname "*.efi" -print -quit | grep -q .; then
             dist_dir=$efi_part/EFI/reinstall
             basename=$(basename $source)
@@ -1085,13 +1134,22 @@ add_efi_entry_in_linux() {
                 error_and_exit "Could not add efi entry."
             fi
 
-            id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index | grep .)
+            id=$(echo "$res" | grep_efi_entry | tail -1 | grep_efi_index || true)
+            if [ -z "$id" ]; then
+                echo "Command: $*"
+                echo "$res"
+                error_and_exit "Could not find new efi entry id."
+            fi
             efibootmgr --bootnext "$id"
             return
         fi
     done
 
     error_and_exit "Can't find efi partition."
+}
+
+get_efi_dirs_or_exit() {
+    get_maybe_efi_dirs_in_linux | grep . || error_and_exit "Can't find efi partition."
 }
 
 get_grub_efi_filename() {
@@ -1211,7 +1269,9 @@ echo_tmp_ttys() {
 get_entry_name() {
     printf 'reinstall ('
     printf '%s' "$distro"
-    [ -n "$releasever" ] && printf ' %s' "$releasever"
+    if [ -n "$releasever" ]; then
+        printf ' %s' "$releasever"
+    fi
     printf ')'
 }
 
@@ -1229,7 +1289,9 @@ build_nextos_cmdline() {
 
     # arm64 需要显式带控制台参数；x86 不追加，避免 Debian installer 界面被固定到串口。
     if ttys=$(echo_tmp_ttys); then
-        [ -n "$ttys" ] && nextos_cmdline+=" $ttys"
+        if [ -n "$ttys" ]; then
+            nextos_cmdline+=" $ttys"
+        fi
     fi
     # nextos_cmdline+=" mem=256M"
     # nextos_cmdline+=" lowmem=+1"
@@ -1429,7 +1491,10 @@ EOF
                 # 模块可能有压缩，因此要有 *
                 if ! find "$dst_drivers_dir" -name "$driver.ko*" | grep -q .; then
                     echo "adding driver: $driver"
-                    file=$(find . -name "$driver.ko*" | grep .)
+                    file=$(find . -name "$driver.ko*" | head -1)
+                    if [ -z "$file" ]; then
+                        error_and_exit "Could not find kernel module: $driver"
+                    fi
                     cp -fv --parents "$file" "$dst_drivers_dir"
                 fi
             done
@@ -1624,7 +1689,11 @@ get_ip_conf_cmd() {
     if ! is_found_ipv4_netconf && ! is_found_ipv6_netconf; then
         collect_netconf >&2
     fi
-    is_in_china && is_in_china=true || is_in_china=false
+    if is_in_china; then
+        is_in_china=true
+    else
+        is_in_china=false
+    fi
 
     sh=/initrd-network.sh
     if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
@@ -1776,7 +1845,9 @@ for o in force-cn \
     ssh-port: \
     hostname: \
     ssh-key: public-key:; do
-    [ -n "$long_opts" ] && long_opts+=,
+    if [ -n "$long_opts" ]; then
+        long_opts+=,
+    fi
     long_opts+=$o
 done
 
@@ -1934,18 +2005,22 @@ setos nextos $distro $releasever
 # 删除上次残留的引导条目（EFI 场景）
 # 防止重复运行后仍然进入旧的 reinstall 菜单项
 if is_efi; then
+    efi_dirs=$(get_efi_dirs_or_exit)
+
     # shellcheck disable=SC2046
-    find $(get_maybe_efi_dirs_in_linux) $([ -d /boot ] && echo /boot) \
+    find $efi_dirs $([ -d /boot ] && echo /boot) \
         -type f -name 'custom.cfg' -exec rm -f {} \;
     # 清理上次可能复制到 EFI 分区的安装文件
-    for efi_dir in $(get_maybe_efi_dirs_in_linux); do
+    for efi_dir in $efi_dirs; do
         rm -f "$efi_dir/EFI/reinstall/reinstall-vmlinuz" \
             "$efi_dir/EFI/reinstall/reinstall-initrd" \
             "$efi_dir/EFI/reinstall/reinstall-firmware" 2>/dev/null || true
     done
 
     install_pkg efibootmgr
-    efibootmgr | grep -q 'BootNext:' && efibootmgr --quiet --delete-bootnext
+    if efibootmgr | grep -q 'BootNext:'; then
+        efibootmgr --quiet --delete-bootnext
+    fi
     efibootmgr | grep_efi_entry | grep 'reinstall' | grep_efi_index |
         xargs -I {} efibootmgr --quiet --bootnum {} --delete-bootnum
 fi
@@ -1986,8 +2061,11 @@ fi
 # 寻找 grub.cfg / extlinux.conf
 if is_efi; then
     # 现在 linux-efi 是使用 reinstall 目录下的 grub
-    # shellcheck disable=SC2046
-    efi_reinstall_dir=$(find $(get_maybe_efi_dirs_in_linux) -type d -name "reinstall" | head -1)
+    efi_dirs=$(get_efi_dirs_or_exit)
+    efi_reinstall_dir=$(find $efi_dirs -type d -name "reinstall" | head -1)
+    if [ -z "$efi_reinstall_dir" ]; then
+        error_and_exit "Can't find efi reinstall directory."
+    fi
     grub_cfg=$efi_reinstall_dir/grub.cfg
 else
     if is_mbr_using_grub; then
@@ -2080,10 +2158,20 @@ if is_use_firmware; then
     initrds+=" $firmware"
 fi
 
+initrd_line=
+if [ -n "$initrds" ]; then
+    initrd_line="$initrd_cmd $initrds"
+fi
+
 if is_use_local_extlinux; then
     info extlinux
     echo $extlinux_cfg
     extlinux_dir="$(dirname $extlinux_cfg)"
+
+    append_line=
+    if [ -n "$cmdline" ]; then
+        append_line="APPEND $cmdline"
+    fi
 
     # 这两项在部分环境会干扰一次性启动项
     sed -i "/^MENU HIDDEN/d" $extlinux_cfg
@@ -2094,8 +2182,8 @@ TIMEOUT 5
 LABEL reinstall
   MENU LABEL $(get_entry_name)
   $linux_cmd $vmlinuz
-  $([ -n "$initrds" ] && echo "$initrd_cmd $initrds")
-  $([ -n "$cmdline" ] && echo "APPEND $cmdline")
+  $initrd_line
+  $append_line
 EOF
     # 设置重启引导项
     extlinux --once=reinstall $extlinux_dir
@@ -2104,7 +2192,9 @@ EOF
     if is_boot_in_separate_partition; then
         info "copying files to $extlinux_dir"
         cp -f /reinstall-initrd $extlinux_dir
-        is_use_firmware && cp -f /reinstall-firmware $extlinux_dir
+        if is_use_firmware; then
+            cp -f /reinstall-firmware $extlinux_dir
+        fi
         # 放最后，防止前两条返回非 0 而报错
         cp -f /reinstall-vmlinuz $extlinux_dir
     fi
@@ -2151,6 +2241,11 @@ else
 
     get_function_content load_grubenv_if_not_loaded >$target_cfg
 
+    btrfs_relative_path_line=
+    if is_os_in_btrfs; then
+        btrfs_relative_path_line='set btrfs_relative_path=n'
+    fi
+
     del_empty_lines <<EOF | tee -a $target_cfg
 set timeout_style=menu
 set timeout=5
@@ -2159,11 +2254,11 @@ menuentry "$(get_entry_name)" --unrestricted {
     insmod part_gpt
     insmod ext2
     insmod fat
-    $(is_os_in_btrfs && echo 'set btrfs_relative_path=n')
+    $btrfs_relative_path_line
     insmod all_video
     search --no-floppy --file --set=root $vmlinuz
     $linux_cmd $vmlinuz $cmdline
-    $([ -n "$initrds" ] && echo "$initrd_cmd $initrds")
+    $initrd_line
 }
 EOF
 

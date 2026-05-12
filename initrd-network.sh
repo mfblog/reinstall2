@@ -89,19 +89,27 @@ is_have_ipv6_gateway() {
 }
 
 is_have_ipv4() {
-    is_have_ipv4_addr && is_have_ipv4_gateway
+    if ! is_have_ipv4_addr; then
+        return 1
+    fi
+    is_have_ipv4_gateway
 }
 
 is_have_ipv6() {
-    is_have_ipv6_addr && is_have_ipv6_gateway
+    if ! is_have_ipv6_addr; then
+        return 1
+    fi
+    is_have_ipv6_gateway
 }
 
 is_have_ipv4_dns() {
-    [ -f /etc/resolv.conf ] && grep -q '^nameserver .*\.' /etc/resolv.conf
+    [ -f /etc/resolv.conf ] || return 1
+    grep -q '^nameserver .*\.' /etc/resolv.conf
 }
 
 is_have_ipv6_dns() {
-    [ -f /etc/resolv.conf ] && grep -q '^nameserver .*:' /etc/resolv.conf
+    [ -f /etc/resolv.conf ] || return 1
+    grep -q '^nameserver .*:' /etc/resolv.conf
 }
 
 add_missing_ipv4_config() {
@@ -134,18 +142,26 @@ add_missing_ipv6_config() {
 
         if [ -n "$ipv6_extra_addrs" ]; then
             printf '%s\n' "$ipv6_extra_addrs" | tr ',' '\n' | while IFS= read -r addr; do
-                [ -n "$addr" ] && ip -6 addr add "$addr" dev "$ethx" 2>/dev/null || true
+                if [ -n "$addr" ]; then
+                    ip -6 addr add "$addr" dev "$ethx" 2>/dev/null || true
+                fi
             done
         fi
     fi
 }
 
 is_need_test_ipv4() {
-    is_have_ipv4 && ! $ipv4_has_internet
+    if ! is_have_ipv4; then
+        return 1
+    fi
+    ! $ipv4_has_internet
 }
 
 is_need_test_ipv6() {
-    is_have_ipv6 && ! $ipv6_has_internet
+    if ! is_have_ipv6; then
+        return 1
+    fi
+    ! $ipv6_has_internet
 }
 
 # 优先使用 initrd 内现成的 wget / nc 做连通性测试
@@ -185,7 +201,8 @@ test_by_nc() {
 }
 
 is_debian_kali() {
-    [ -f /etc/lsb-release ] && grep -Eiq 'Debian|Kali' /etc/lsb-release
+    [ -f /etc/lsb-release ] || return 1
+    grep -Eiq 'Debian|Kali' /etc/lsb-release
 }
 
 test_connect() {
@@ -334,16 +351,30 @@ fi
 # 因为会在trans里判断
 # 这里等待5秒就够了，因为之前尝试获取dhcp6也用了一段时间
 for i in $(seq 5 -1 0); do
-    is_have_ipv6 && break
+    if is_have_ipv6; then
+        break
+    fi
     echo "waiting slaac for ${i}s"
     sleep 1
 done
 
 # 记录是否有动态地址
 # 由于还没设置静态ip，所以有条目表示有动态地址
-is_have_ipv4_addr && dhcpv4=true || dhcpv4=false
-is_have_ipv6_addr && dhcpv6_or_slaac=true || dhcpv6_or_slaac=false
-is_have_ipv6_gateway && ra_has_gateway=true || ra_has_gateway=false
+if is_have_ipv4_addr; then
+    dhcpv4=true
+else
+    dhcpv4=false
+fi
+if is_have_ipv6_addr; then
+    dhcpv6_or_slaac=true
+else
+    dhcpv6_or_slaac=false
+fi
+if is_have_ipv6_gateway; then
+    ra_has_gateway=true
+else
+    ra_has_gateway=false
+fi
 
 # 如果自动获取的地址与重装前不同，则切回静态配置
 # 这里只比较地址本身；掩码和网关差异留到后续连通性检测再处理
@@ -431,12 +462,36 @@ fi
 # 传参给 trans.start
 netconf="/dev/netconf/$ethx"
 mkdir -p "$netconf"
-$dhcpv4 && echo 1 >"$netconf/dhcpv4" || echo 0 >"$netconf/dhcpv4"
-$dhcpv6_or_slaac && echo 1 >"$netconf/dhcpv6_or_slaac" || echo 0 >"$netconf/dhcpv6_or_slaac"
-$should_disable_dhcpv4 && echo 1 >"$netconf/should_disable_dhcpv4" || echo 0 >"$netconf/should_disable_dhcpv4"
-$should_disable_accept_ra && echo 1 >"$netconf/should_disable_accept_ra" || echo 0 >"$netconf/should_disable_accept_ra"
-$should_disable_autoconf && echo 1 >"$netconf/should_disable_autoconf" || echo 0 >"$netconf/should_disable_autoconf"
-$is_in_china && echo 1 >"$netconf/is_in_china" || echo 0 >"$netconf/is_in_china"
+if $dhcpv4; then
+    echo 1 >"$netconf/dhcpv4"
+else
+    echo 0 >"$netconf/dhcpv4"
+fi
+if $dhcpv6_or_slaac; then
+    echo 1 >"$netconf/dhcpv6_or_slaac"
+else
+    echo 0 >"$netconf/dhcpv6_or_slaac"
+fi
+if $should_disable_dhcpv4; then
+    echo 1 >"$netconf/should_disable_dhcpv4"
+else
+    echo 0 >"$netconf/should_disable_dhcpv4"
+fi
+if $should_disable_accept_ra; then
+    echo 1 >"$netconf/should_disable_accept_ra"
+else
+    echo 0 >"$netconf/should_disable_accept_ra"
+fi
+if $should_disable_autoconf; then
+    echo 1 >"$netconf/should_disable_autoconf"
+else
+    echo 0 >"$netconf/should_disable_autoconf"
+fi
+if $is_in_china; then
+    echo 1 >"$netconf/is_in_china"
+else
+    echo 0 >"$netconf/is_in_china"
+fi
 echo "$ethx" >"$netconf/ethx"
 echo "$mac_addr" >"$netconf/mac_addr"
 echo "$ipv4_addr" >"$netconf/ipv4_addr"
@@ -444,5 +499,13 @@ echo "$ipv4_gateway" >"$netconf/ipv4_gateway"
 echo "$ipv6_addr" >"$netconf/ipv6_addr"
 echo "$ipv6_gateway" >"$netconf/ipv6_gateway"
 echo "$ipv6_extra_addrs" >"$netconf/ipv6_extra_addrs"
-$ipv4_has_internet && echo 1 >"$netconf/ipv4_has_internet" || echo 0 >"$netconf/ipv4_has_internet"
-$ipv6_has_internet && echo 1 >"$netconf/ipv6_has_internet" || echo 0 >"$netconf/ipv6_has_internet"
+if $ipv4_has_internet; then
+    echo 1 >"$netconf/ipv4_has_internet"
+else
+    echo 0 >"$netconf/ipv4_has_internet"
+fi
+if $ipv6_has_internet; then
+    echo 1 >"$netconf/ipv6_has_internet"
+else
+    echo 0 >"$netconf/ipv6_has_internet"
+fi
